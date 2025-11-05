@@ -37,7 +37,7 @@ Components: Modular & reusable React components
 
 Deployment: Vercel / Netlify (recommended)
 
-📂 Project Structure
+📂 Project Structure:
 ├── app/             # Core application logic & pages
 ├── components/      # Reusable UI components
 ├── lib/             # Helper functions / utilities
@@ -46,14 +46,12 @@ Deployment: Vercel / Netlify (recommended)
 ├── next.config.mjs  # Next.js configuration
 └── package.json     # Project dependencies
 
-🚀 Getting Started
+🚀 Getting Started:
 Prerequisites
-
 Node.js (v18+ recommended)
-
 npm or yarn package manager
 
-Installation
+Installation:
 # Clone the repository
 git clone https://github.com/Santhoshadimulapu/Ethical-Ai-Trianing-simulation-final.git
 
@@ -62,6 +60,8 @@ cd Ethical-Ai-Trianing-simulation-final
 
 # Install dependencies
 npm install
+npm install react-chartjs-2 chart.js
+
 
 Run the Project
 # Start development server
@@ -74,30 +74,17 @@ Build for Production
 npm run build
 npm run start
 
-📸 Screenshots (Add later)
 
-(Add images of your UI here — scenario selection screen, decision-making interface, results page, etc.)
-
-🌍 Future Enhancements
-
+🌍 Future Enhancements:
 Add more diverse scenarios across industries.
-
 Include gamification elements (scores, badges).
-
 Integrate analytics dashboards for tracking user learning progress.
-
 Multi-user mode for group training simulations.
-
 Support for different languages and regions to cover cultural variations in AI ethics.
 
-🤝 Contribution
-
+🤝 Contribution:
 Contributions are welcome!
-
 Fork this repository.
-
-Create a new branch (feature-xyz).
-
+Create a new branch.
 Commit your changes.
-
 Push to your branch and open a Pull Request.
