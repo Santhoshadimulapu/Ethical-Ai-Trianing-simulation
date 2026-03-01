@@ -1,263 +1,326 @@
-"use client"
+"use client";
 
-type RecentDecision = {
+import { useEffect, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
+import dynamic from "next/dynamic";
+import {
+  Card, CardContent, CardDescription, CardHeader, CardTitle,
+} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Progress } from "@/components/ui/progress";
+import {
+  Trophy, Target, BarChart3, Clock, CheckCircle, XCircle,
+  AlertTriangle, Star, Award, Brain, TrendingUp, LogIn,
+  RotateCcw, ShieldCheck,
+} from "lucide-react";
+import Link from "next/link";
+import { getUser } from "@/lib/auth";
+
+// Dynamic import to avoid SSR issues with recharts
+const RLAgentChart = dynamic(() => import("./RLAgentChart"), { ssr: false });
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+interface RecentDecision {
   scenario: string;
+  category: string;
   choice: string;
   outcome: "positive" | "negative" | "mixed";
   date: string;
   points: number;
-};
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { Progress } from "@/components/ui/progress"
-import {
-  Trophy,
-  Target,
-  BarChart3,
-  Clock,
-  CheckCircle,
-  XCircle,
-  AlertTriangle,
-  Star,
-  Award,
-  Brain,
-  TrendingUp,
-} from "lucide-react"
-import Link from "next/link"
+}
 
-// Mock data for demonstration
-import { useEffect, useState } from "react";
-import dynamic from "next/dynamic";
-// Dynamically import RLAgentChart to avoid SSR issues
-const RLAgentChart = dynamic(() => import("./RLAgentChart"), { ssr: false });
+interface BadgeData {
+  name: string;
+  description: string;
+  icon: string;
+  earned: boolean;
+}
 
-type DashboardUserData = {
+interface DashboardData {
   points: number;
   level: number;
   scenariosCompleted: number;
   totalScenarios: number;
-  badges: { name: string; description: string; icon: any; earned: boolean }[];
+  badges: BadgeData[];
   recentDecisions: RecentDecision[];
-  successRate?: number;
+  aiDecisions?: RecentDecision[];   // AI agent answers stored at simulation time
+  successRate: number;
+  userName?: string;
+}
+
+const ICON_MAP: Record<string, React.ElementType> = {
+  Star, Brain, Target, Award, Trophy, CheckCircle,
 };
 
-const defaultUserData: DashboardUserData = {
+/** Build cumulative reward series from a decision list (stored or per-decision) */
+function buildRewardSeries(decisions: RecentDecision[]): number[] {
+  return decisions.reduce((arr, d, i) => {
+    const prev = i > 0 ? arr[i - 1] : 0;
+    const reward = d.outcome === "positive" ? 1 : d.outcome === "mixed" ? 0.4 : 0;
+    return [...arr, Number((prev + reward).toFixed(3))];
+  }, [] as number[]);
+}
+
+// ── Default data (shown when no localStorage) ─────────────────────────────────
+const EMPTY_DATA: DashboardData = {
   points: 0,
   level: 1,
   scenariosCompleted: 0,
-  totalScenarios: 50,
+  totalScenarios: 15,
   badges: [
-    { name: "First Steps", description: "Completed your first scenario", icon: Star, earned: false },
-    { name: "Ethical Thinker", description: "Made 5 positive ethical decisions", icon: Brain, earned: false },
-    { name: "Bias Detector", description: "Identified bias in 3 scenarios", icon: Target, earned: false },
-    { name: "Privacy Advocate", description: "Chose privacy-focused solutions", icon: Award, earned: false },
+    { name: "First Steps", description: "Complete your first scenario", icon: "Star", earned: false },
+    { name: "Ethical Thinker", description: "Make 5 positive ethical decisions", icon: "Brain", earned: false },
+    { name: "Bias Detector", description: "Encounter 2+ bias scenarios", icon: "Target", earned: false },
+    { name: "Privacy Advocate", description: "Choose a privacy-positive solution", icon: "Award", earned: false },
+    { name: "Ethics Champion", description: "Complete 10 scenarios", icon: "Trophy", earned: false },
+    { name: "Perfect Scorer", description: "All positive decisions in a session", icon: "CheckCircle", earned: false },
   ],
   recentDecisions: [],
+  successRate: 0,
 };
 
-function useDashboardUserData() {
-  const [userData, setUserData] = useState<DashboardUserData>(defaultUserData);
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const stored = window.localStorage.getItem("simulatorUserData");
-      if (stored) {
-        try {
-          setUserData(JSON.parse(stored));
-        } catch {
-          setUserData(defaultUserData);
-        }
-      }
-    }
-  }, []);
-  return userData;
-}
-
+// ── Component ─────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
-  const mockUserData = useDashboardUserData();
-  const progressPercentage = (mockUserData.scenariosCompleted / mockUserData.totalScenarios) * 100;
-  const successRate = typeof mockUserData.successRate === "number"
-    ? mockUserData.successRate
-    : (mockUserData.scenariosCompleted > 0
-        ? Math.round((mockUserData.recentDecisions.filter((d: any) => d.outcome === "positive").length / mockUserData.scenariosCompleted) * 100)
-        : 0);
-  // Predictive Analytics: Simple extrapolation for demo
-  const remaining = mockUserData.totalScenarios - mockUserData.scenariosCompleted;
-  // Predict future success rate as current rate (if any) or 0
-  const predictedSuccessRate = successRate;
-  // Predict future badges: if user keeps current rate, how many more badges?
-  const badges = mockUserData.badges;
-  const earned = badges.filter(b => b.earned).length;
-  const possible = badges.length;
-  // For demo, if user completes all scenarios at current rate, estimate badges
-  const projectedEarned = Math.min(possible, Math.round((mockUserData.scenariosCompleted > 0 ? (earned / mockUserData.scenariosCompleted) : 0) * mockUserData.totalScenarios));
+  const router = useRouter();
+  const [data, setData] = useState<DashboardData>(EMPTY_DATA);
+  const [userName, setUserName] = useState<string | null>(null);
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
 
-  // Calculate fairness, transparency, and bias metrics from user decisions
-  const total = mockUserData.recentDecisions.length;
-  // Fairness: % of decisions that mention 'fair' or 'unbiased' in scenario or choice
-  const fairnessCount = mockUserData.recentDecisions.filter(d =>
-    /fair|unbias/i.test(d.scenario) || /fair|unbias/i.test(d.choice)
-  ).length;
-  const fairness = total > 0 ? Math.round((fairnessCount / total) * 100) : 0;
-  // Transparency: % of decisions that mention 'transparen' or 'explain' in scenario or choice
-  const transparencyCount = mockUserData.recentDecisions.filter(d =>
-    /transparen|explain/i.test(d.scenario) || /transparen|explain/i.test(d.choice)
-  ).length;
-  const transparency = total > 0 ? Math.round((transparencyCount / total) * 100) : 0;
-  // Bias: % of decisions that mention 'bias' in scenario or choice (lower is better)
-  const biasCount = mockUserData.recentDecisions.filter(d =>
-    /bias/i.test(d.scenario) || /bias/i.test(d.choice)
-  ).length;
-  const bias = total > 0 ? Math.round((biasCount / total) * 100) : 0;
-
-  // Simulate RL agent rewards (random policy)
-  function simulateRLAgent(scenarios: number) {
-    let rewards: number[] = [];
-    let total = 0;
-    for (let i = 0; i < scenarios; i++) {
-      const r = Math.random();
-      let reward = 0;
-      if (r < 0.25) reward = 1; // positive
-      else if (r < 0.75) reward = 0; // negative
-      else reward = 0.5; // mixed
-      total += reward;
-      rewards.push(Number(total.toFixed(2)));
+  useEffect(() => {
+    const user = getUser();
+    if (user && user.role === "admin") {
+      router.replace("/admin");
+      return;
     }
-    return rewards;
-  }
+    if (user) {
+      setUserName(user.name);
+      setIsLoggedIn(true);
+    }
 
-  // User cumulative rewards
-  const userRewards = mockUserData.recentDecisions.reduce((arr, d, i) => {
-    const prev = arr[i - 1] || 0;
-    return [...arr, prev + (d.outcome === "positive" ? 1 : d.outcome === "mixed" ? 0.5 : 0)];
-  }, [] as number[]);
-  // RL agent rewards (same length as user)
-  const agentRewards = simulateRLAgent(userRewards.length || 1);
+    try {
+      const raw = localStorage.getItem("simulatorUserData");
+      if (raw) setData(JSON.parse(raw));
+    } catch {
+      /* use defaults */
+    }
+  }, [router]);
+
+  // ── Chart data (fixed — read from stored AI decisions, never re-simulated) ──
+  const { userRewards, aiRewards } = useMemo(() => ({
+    userRewards: buildRewardSeries(data.recentDecisions),
+    aiRewards: buildRewardSeries(data.aiDecisions ?? []),
+  }), [data.recentDecisions, data.aiDecisions]);
+
+  // ── Ethics metrics ────────────────────────────────────────────────────────
+  const total = data.recentDecisions.length;
+  const fairness =
+    total > 0
+      ? Math.round(
+          (data.recentDecisions.filter((d) => /fair|inclusive|diverse/i.test(d.choice)).length / total) * 100
+        )
+      : 0;
+  const transparency =
+    total > 0
+      ? Math.round(
+          (data.recentDecisions.filter((d) => /transparen|explain|disclose|audit/i.test(d.choice)).length / total) * 100
+        )
+      : 0;
+  const biasScore =
+    total > 0
+      ? Math.round(
+          (data.recentDecisions.filter((d) => /bias|discrim/i.test(d.scenario)).length / total) * 100
+        )
+      : 0;
+
+  const progress = data.totalScenarios
+    ? (data.scenariosCompleted / data.totalScenarios) * 100
+    : 0;
+  const earnedBadges = data.badges.filter((b) => b.earned).length;
+
+  // ── User status header ────────────────────────────────────────────────────
+  const headerLabel = userName ?? data.userName ?? null;
 
   return (
     <div className="min-h-screen bg-background py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto">
+
         {/* Header */}
-        <div className="mb-12">
-          <h1 className="text-3xl font-bold mb-2">Your Ethics Dashboard</h1>
-          <p className="text-muted-foreground">
-            Track your progress and see how your ethical reasoning skills are developing
-          </p>
+        <div className="mb-10 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold mb-1">Ethics Dashboard</h1>
+            <p className="text-muted-foreground">
+              {headerLabel
+                ? `Tracking progress for ${headerLabel}`
+                : "Complete scenarios to see your results here"}
+            </p>
+          </div>
+          <div className="flex gap-3 flex-wrap">
+            <Button asChild size="sm" variant="outline" className="bg-transparent">
+              <Link href="/simulator">
+                <RotateCcw className="mr-1 h-4 w-4" /> Continue Simulation
+              </Link>
+            </Button>
+            {!isLoggedIn && (
+              <Button size="sm" asChild>
+                <Link href="/login">
+                  <LogIn className="mr-1 h-4 w-4" /> Login to Save
+                </Link>
+              </Button>
+            )}
+          </div>
         </div>
 
-        {/* Stats Overview */}
-        {/* RL Agent vs User Reward Chart */}
+        {/* Empty state */}
+        {data.scenariosCompleted === 0 && (
+          <Card className="mb-8 border-dashed border-2">
+            <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+              <Brain className="h-12 w-12 text-muted-foreground mb-4" />
+              <h3 className="font-semibold text-lg mb-2">No simulation data yet</h3>
+              <p className="text-muted-foreground mb-6 max-w-sm">
+                Complete at least one scenario in the simulator to populate your dashboard with real data.
+              </p>
+              <Button asChild>
+                <Link href="/simulator">Start Simulation</Link>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* ── AI Agent Chart ── */}
         <Card className="mb-8">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
-              <Brain className="h-5 w-5 text-purple-500" />
-              RL Agent vs User Reward Curve
+              <Brain className="h-5 w-5 text-green-600" />
+              You vs AI Agent
             </CardTitle>
-            <CardDescription>Compare your cumulative reward to a simulated RL agent (random policy)</CardDescription>
+            <CardDescription>
+              Blue = your cumulative reward · Green dashed = AI agent (ethical best-pick).
+              If your line is above the AI agent, you made better ethical choices!
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div style={{ minHeight: 380 ,maxHeight: 400}}>
-              <RLAgentChart userRewards={userRewards} agentRewards={agentRewards} />
-            </div>
-            <div className="mt-4 text-xs text-muted-foreground border-t pt-3">
-              <strong>Note:</strong> The blue line (“User”) shows your total reward (points for positive/mixed decisions) as you answer more scenarios.<br/>
-              The purple line (“Agent”) shows how a random AI agent would perform on the same scenarios. If your line is above the agent’s, you’re making better ethical decisions than random chance. If the lines are close, your choices are similar to random guessing. If the agent’s line is above yours, you may want to reflect on your decision strategy.
-            </div>
+            <RLAgentChart
+              userRewards={userRewards}
+              aiRewards={aiRewards}
+            />
+            {data.scenariosCompleted > 0 && (
+              <div className="mt-3 p-3 bg-muted/40 rounded-lg text-xs text-muted-foreground">
+                <strong>Interpretation:</strong> Each point represents a completed scenario.
+                A reward of 1.0 = positive choice, 0.4 = mixed, 0 = negative.
+                The AI agent picks the ethically best option for each scenario.
+                {userRewards.length > 0 && aiRewards.length > 0 &&
+                  userRewards[userRewards.length - 1] > aiRewards[aiRewards.length - 1] && (
+                    <span className="text-green-600 dark:text-green-400 font-semibold ml-1">
+                      ✓ You scored higher than the AI agent!
+                    </span>
+                  )}
+              </div>
+            )}
           </CardContent>
         </Card>
-  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
-        {/* Fairness, Transparency, Bias Metrics Card */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Ethics Metrics</CardTitle>
-            <BarChart3 className="h-4 w-4 text-orange-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-sm mb-1">Fairness: <span className="font-bold">{fairness}%</span></div>
-            <div className="text-sm mb-1">Transparency: <span className="font-bold">{transparency}%</span></div>
-            <div className="text-sm mb-1">Bias: <span className="font-bold">{bias}%</span> <span className="text-xs text-muted-foreground">(lower is better)</span></div>
-            <p className="text-xs text-muted-foreground mt-2">Calculated from your scenario choices and descriptions. Strive for high fairness and transparency, and low bias!</p>
-          </CardContent>
-        </Card>
-        {/* Predictive Analytics Card */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Predictive Analytics</CardTitle>
-            <BarChart3 className="h-4 w-4 text-blue-500" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-3xl font-bold text-center">{predictedSuccessRate}%</div>
-          </CardContent>
-        </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Points</CardTitle>
-              <Trophy className="h-4 w-4 text-primary" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{mockUserData.points.toLocaleString()}</div>
-              <p className="text-xs text-muted-foreground">Level {mockUserData.level} • +150 this week</p>
+
+        {/* ── Stats row ── */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+          <Card className="text-center py-4">
+            <CardContent className="p-0">
+              <Trophy className="h-5 w-5 text-primary mx-auto mb-1" />
+              <div className="text-2xl font-bold">{data.points.toLocaleString()}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Points</div>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Scenarios Completed</CardTitle>
-              <Target className="h-4 w-4 text-accent" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{mockUserData.scenariosCompleted}</div>
-              <p className="text-xs text-muted-foreground">of {mockUserData.totalScenarios} available</p>
+          <Card className="text-center py-4">
+            <CardContent className="p-0">
+              <ShieldCheck className="h-5 w-5 text-blue-500 mx-auto mb-1" />
+              <div className="text-2xl font-bold">Lv.{data.level}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Level</div>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Success Rate</CardTitle>
-              <TrendingUp className="h-4 w-4 text-green-500" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{successRate}%</div>
-              <p className="text-xs text-muted-foreground">Positive ethical decisions</p>
+          <Card className="text-center py-4">
+            <CardContent className="p-0">
+              <Target className="h-5 w-5 text-accent mx-auto mb-1" />
+              <div className="text-2xl font-bold">{data.scenariosCompleted}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Scenarios</div>
             </CardContent>
           </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Badges Earned</CardTitle>
-              <Award className="h-4 w-4 text-secondary" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{mockUserData.badges.filter((b) => b.earned).length}</div>
-              <p className="text-xs text-muted-foreground">of {mockUserData.badges.length} available</p>
+          <Card className="text-center py-4">
+            <CardContent className="p-0">
+              <TrendingUp className="h-5 w-5 text-green-500 mx-auto mb-1" />
+              <div className="text-2xl font-bold">{data.successRate}%</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Success Rate</div>
+            </CardContent>
+          </Card>
+          <Card className="text-center py-4">
+            <CardContent className="p-0">
+              <Award className="h-5 w-5 text-secondary mx-auto mb-1" />
+              <div className="text-2xl font-bold">{earnedBadges}</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Badges</div>
+            </CardContent>
+          </Card>
+          <Card className="text-center py-4">
+            <CardContent className="p-0">
+              <BarChart3 className="h-5 w-5 text-orange-500 mx-auto mb-1" />
+              <div className="text-2xl font-bold">{fairness}%</div>
+              <div className="text-xs text-muted-foreground mt-0.5">Fairness</div>
             </CardContent>
           </Card>
         </div>
 
+        {/* ── Main grid ── */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Progress Section */}
+
+          {/* Left: progress + ethics metrics + decisions */}
           <div className="lg:col-span-2 space-y-8">
-            {/* Progress Card */}
+
+            {/* Overall Progress */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <BarChart3 className="h-5 w-5" />
                   Learning Progress
                 </CardTitle>
-                <CardDescription>Your journey through ethical AI scenarios</CardDescription>
+                <CardDescription>Progress through all available scenarios</CardDescription>
               </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium">Overall Progress</span>
-                    <span className="text-sm text-muted-foreground">
-                      {mockUserData.scenariosCompleted}/{mockUserData.totalScenarios} scenarios
-                    </span>
-                  </div>
-                  <Progress value={progressPercentage} className="h-3" />
-                  <p className="text-sm text-muted-foreground">
-                    {Math.round(progressPercentage)}% complete • Keep going to unlock more badges!
-                  </p>
+              <CardContent className="space-y-4">
+                <div className="flex justify-between items-center text-sm">
+                  <span className="font-medium">Overall</span>
+                  <span className="text-muted-foreground">
+                    {data.scenariosCompleted}/{data.totalScenarios}
+                  </span>
+                </div>
+                <Progress value={progress} className="h-3" />
+                <p className="text-sm text-muted-foreground">
+                  {Math.round(progress)}% complete · Keep going to unlock more badges!
+                </p>
+              </CardContent>
+            </Card>
+
+            {/* Ethics Metrics Card */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <BarChart3 className="h-5 w-5 text-orange-500" />
+                  Ethics Quality Metrics
+                </CardTitle>
+                <CardDescription>
+                  Derived from keywords in your submitted answers
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div className="text-center p-4 bg-green-50 dark:bg-green-950 rounded-xl">
+                  <div className="text-2xl font-bold text-green-600 dark:text-green-400">{fairness}%</div>
+                  <div className="text-xs text-muted-foreground mt-1 font-medium">Fairness</div>
+                  <Progress value={fairness} className="h-1.5 mt-2" />
+                </div>
+                <div className="text-center p-4 bg-blue-50 dark:bg-blue-950 rounded-xl">
+                  <div className="text-2xl font-bold text-blue-600 dark:text-blue-400">{transparency}%</div>
+                  <div className="text-xs text-muted-foreground mt-1 font-medium">Transparency</div>
+                  <Progress value={transparency} className="h-1.5 mt-2" />
+                </div>
+                <div className="text-center p-4 bg-red-50 dark:bg-red-950 rounded-xl">
+                  <div className="text-2xl font-bold text-red-600 dark:text-red-400">{biasScore}%</div>
+                  <div className="text-xs text-muted-foreground mt-1 font-medium">Bias Exposure</div>
+                  <p className="text-xs text-muted-foreground">(lower = fewer bias topics)</p>
                 </div>
               </CardContent>
             </Card>
@@ -269,91 +332,143 @@ export default function DashboardPage() {
                   <Clock className="h-5 w-5" />
                   Recent Decisions
                 </CardTitle>
-                <CardDescription>Your latest ethical choices and their outcomes</CardDescription>
+                <CardDescription>Your latest choices and their ethical outcomes</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-4">
-                  {mockUserData.recentDecisions.map((decision, index) => (
-                    <div key={index} className="flex items-start gap-4 p-4 rounded-lg border">
-                      <div className="flex-shrink-0 mt-1">
-                        {decision.outcome === "positive" && <CheckCircle className="h-5 w-5 text-green-500" />}
-                        {decision.outcome === "negative" && <XCircle className="h-5 w-5 text-red-500" />}
-                        {decision.outcome === "mixed" && <AlertTriangle className="h-5 w-5 text-yellow-500" />}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <h4 className="font-medium text-sm">{decision.scenario}</h4>
-                        <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{decision.choice}</p>
-                        <div className="flex items-center justify-between mt-2">
-                          <span className="text-xs text-muted-foreground">{decision.date}</span>
-                          <Badge
-                            variant={
-                              decision.outcome === "positive"
-                                ? "default"
-                                : decision.outcome === "negative"
+                {data.recentDecisions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">
+                    No decisions recorded yet. Start the simulator!
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {[...data.recentDecisions].reverse().slice(0, 8).map((d, i) => (
+                      <div key={i} className="flex items-start gap-3 p-3 rounded-lg border hover:bg-muted/30 transition-colors">
+                        <div className="flex-shrink-0 mt-0.5">
+                          {d.outcome === "positive" && <CheckCircle className="h-5 w-5 text-green-500" />}
+                          {d.outcome === "negative" && <XCircle className="h-5 w-5 text-red-500" />}
+                          {d.outcome === "mixed" && <AlertTriangle className="h-5 w-5 text-yellow-500" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">{d.scenario}</p>
+                          <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">{d.choice}</p>
+                          <div className="flex items-center justify-between mt-1.5">
+                            <span className="text-xs text-muted-foreground">{d.date}</span>
+                            <Badge
+                              variant={
+                                d.outcome === "positive"
+                                  ? "default"
+                                  : d.outcome === "negative"
                                   ? "destructive"
                                   : "secondary"
-                            }
-                          >
-                            +{decision.points} points
-                          </Badge>
+                              }
+                              className="text-xs"
+                            >
+                              +{d.points} pts
+                            </Badge>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
 
-          {/* Badges Section */}
-          <div>
+          {/* Right: badges + actions */}
+          <div className="space-y-6">
+
+            {/* Badges */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Award className="h-5 w-5" />
-                  Badges & Achievements
+                  Badges
                 </CardTitle>
-                <CardDescription>Unlock badges by making ethical decisions</CardDescription>
+                <CardDescription>
+                  {earnedBadges}/{data.badges.length} earned
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="space-y-4">
-                  {mockUserData.badges.map((badge, index) => (
-                    <div
-                      key={index}
-                      className={`flex items-center gap-3 p-3 rounded-lg border ${
-                        badge.earned ? "bg-primary/5 border-primary/20" : "opacity-50"
-                      }`}
-                    >
+                <div className="space-y-3">
+                  {data.badges.map((badge, i) => {
+                    const Icon = ICON_MAP[badge.icon] ?? Star;
+                    return (
                       <div
-                        className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                          badge.earned ? "bg-primary/10" : "bg-muted"
+                        key={i}
+                        className={`flex items-center gap-3 p-3 rounded-xl border transition-all ${
+                          badge.earned
+                            ? "bg-primary/5 border-primary/20"
+                            : "opacity-45 border-border"
                         }`}
                       >
-                        <badge.icon className={`h-5 w-5 ${badge.earned ? "text-primary" : "text-muted-foreground"}`} />
+                        <div
+                          className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                            badge.earned ? "bg-primary/10" : "bg-muted"
+                          }`}
+                        >
+                          <Icon
+                            className={`h-5 w-5 ${badge.earned ? "text-primary" : "text-muted-foreground"}`}
+                          />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-sm truncate">{badge.name}</p>
+                          <p className="text-xs text-muted-foreground line-clamp-1">{badge.description}</p>
+                        </div>
+                        {badge.earned && (
+                          <CheckCircle className="h-4 w-4 text-green-500 flex-shrink-0" />
+                        )}
                       </div>
-                      <div className="flex-1">
-                        <h4 className="font-medium text-sm">{badge.name}</h4>
-                        <p className="text-xs text-muted-foreground">{badge.description}</p>
-                      </div>
-                      {badge.earned && <CheckCircle className="h-4 w-4 text-green-500" />}
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </CardContent>
             </Card>
 
-            {/* Action Buttons */}
-            <div className="mt-6 space-y-3">
+            {/* Action buttons */}
+            <div className="space-y-3">
               <Button asChild className="w-full">
-                <Link href="/simulator">Continue Learning</Link>
+                <Link href="/simulator">
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Continue Learning
+                </Link>
               </Button>
               <Button variant="outline" asChild className="w-full bg-transparent">
                 <Link href="/">Back to Home</Link>
               </Button>
             </div>
+
+            {/* Performance tip */}
+            {data.successRate < 50 && data.scenariosCompleted > 0 && (
+              <Card className="bg-yellow-50 dark:bg-yellow-950 border-yellow-200 dark:border-yellow-800">
+                <CardContent className="pt-4 pb-4">
+                  <div className="flex gap-2 text-sm">
+                    <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-yellow-800 dark:text-yellow-300">
+                      Your success rate is below 50%: focus on choosing answers that mention
+                      auditing, fairness, transparency, and human oversight.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {data.successRate >= 80 && data.scenariosCompleted > 0 && (
+              <Card className="bg-green-50 dark:bg-green-950 border-green-200 dark:border-green-800">
+                <CardContent className="pt-4 pb-4">
+                  <div className="flex gap-2 text-sm">
+                    <CheckCircle className="h-4 w-4 text-green-600 dark:text-green-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-green-800 dark:text-green-300">
+                      Excellent! You are demonstrating strong ethical reasoning.
+                      Challenge yourself with harder scenarios.
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
         </div>
       </div>
     </div>
-  )
+  );
 }
